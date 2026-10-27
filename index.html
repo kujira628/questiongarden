@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Question Garden</title>
+<meta name="description" content="A personal garden for growing living questions.">
+<meta name="theme-color" content="#F6F1E7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1B1A17" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="問いの庭">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main id="main" class="page"></main>
+
+<div id="capturebar" class="capturebar hidden"></div>
+
+<nav class="tabbar">
+  <a href="#/home" data-route="home" data-label="navHome"><span class="ico">🌱</span><span class="lbl"></span></a>
+  <a href="#/review" data-route="review" data-label="navReview"><span class="ico">🗓</span><span class="lbl"></span></a>
+  <a href="#/tips" data-route="tips" data-label="navTips"><span class="ico">💡</span><span class="lbl"></span></a>
+  <a href="#/settings" data-route="settings" data-label="navSettings"><span class="ico">⚙︎</span><span class="lbl"></span></a>
+</nav>
+
+<div id="sheet" class="sheet hidden">
+  <div class="sheet-backdrop" data-action="sheet-close"></div>
+  <div class="sheet-panel" role="dialog" aria-modal="true"><div class="sheet-grip"></div><div class="sheet-body"></div></div>
+</div>
+<div id="dialog" class="dialog hidden"></div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<noscript>JavaScript is required.</noscript>
+<script type="module" src="app.js"></script>
+</body>
+</html>
