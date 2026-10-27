@@ -1,7 +1,7 @@
 // Tiny IndexedDB wrapper. All data stays on this device.
 const DB_NAME = 'question-garden';
-const DB_VERSION = 1;
-export const STORES = ['questions', 'versions', 'fragments', 'invitations', 'insights', 'meta'];
+const DB_VERSION = 2;
+export const STORES = ['questions', 'versions', 'fragments', 'invitations', 'insights', 'library', 'meta'];
 
 let dbPromise;
 function open() {
@@ -62,15 +62,16 @@ export async function exportAll() {
 
 export async function importAll(data) {
   if (!data || data.app !== 'question-garden') throw new Error('Not a Question Garden backup');
-  let q = 0, f = 0;
+  let q = 0, f = 0, l = 0;
   for (const s of STORES) {
     if (s === 'meta' || !Array.isArray(data[s])) continue;
     for (const r of data[s]) {
       if (s === 'fragments' && r.audioIsDataURL && typeof r.audio === 'string') { r.audio = await dataURLToBlob(r.audio); delete r.audioIsDataURL; }
       await db.put(s, r);
       if (s === 'questions') q++;
+      if (s === 'library') l++;
       if (s === 'fragments') f++;
     }
   }
-  return { q, f };
+  return { q, f, l };
 }

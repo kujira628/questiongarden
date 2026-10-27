@@ -1,5 +1,5 @@
 // Offline cache for the app shell. API calls are never cached.
-const CACHE = 'qg-v1.0.0';
+const CACHE = 'qg-v1.1.0';
 const SHELL = ['./', './index.html', './styles.css', './app.js', './db.js', './i18n.js', './content.js', './ai.js', './manifest.webmanifest', './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

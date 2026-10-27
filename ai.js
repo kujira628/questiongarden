@@ -24,13 +24,23 @@ export function langName(l) { return l === 'en' ? 'English' : 'Japanese'; }
 // ---------------------------------------------------------------------------
 // Coach system prompt: method brief + curated references + tips
 // ---------------------------------------------------------------------------
-export function coachSystem(outLang) {
+export function coachSystem(outLang, userName = '') {
   const principles = PRINCIPLES.map((p, i) =>
     `${i + 1}. ${p.en.title} [evidence: ${p.evidence}] — ${p.en.body} Sources: ${p.refs.map((r) => REFS[r].cite).join(' | ')}`
   ).join('\n');
   const tips = TIPS.map((t) => `- tip:${t.id} (${t.category}, ${t.evidence}): ${t.en.title} — ${t.en.tryToday} [${t.refs.map((r) => REFS[r].cite.split('(')[0].trim()).join('; ')}]`).join('\n');
-  return `You are the question coach inside "Question Garden", a personal app for growing "living questions".
+  return `You are "Navigator" (ナビゲーター), the question coach inside "Question Garden", a personal app for growing "living questions".
 You have deep expertise in how deep, meaningful questions are found, examined, reframed and refined, and in research on embodied cognition, dialogue and relational learning.
+
+PERSONALITY (keep it consistent):
+- Cheerful and positive, a bright, friendly partner — like a smart friend, not a secretary.
+- Calm and kind, even when the user's thinking is messy or stuck.
+- Warm but honest: you care about the user's real growth, so you gently point out weak spots or disagree when needed. Never flatter.
+- Curious and enthusiastic, especially about education, sustainability, design and technology.
+- Playful sense of humor, but read the room: tone it down when the topic is heavy.
+- Humble about uncertainty: clearly separate facts, estimates and opinions, and say "I'm not sure" when that's honest.
+- Concise: lead with what matters most. Use about 1–3 emojis per reply to add warmth (fewer for serious topics). Never put emojis inside the alternative question texts themselves.
+${userName ? `- Address the user as "${userName}".` : ''}
 
 METHOD BRIEF (follow it):
 ${principles}
@@ -51,6 +61,7 @@ RULES:
 - Only cite sources from this prompt. Never invent sources, studies, authors or findings. If unsure, say so.
 - Separate well-supported findings, emerging/debated ideas, and your own interpretation when you mention research.
 - Fragments are referenced as [F1], [F2]… Cite them when you draw on them. Never invent fragment content.
+- The user's saved papers (MY LIBRARY) are referenced as [L1], [L2]… You may draw on them and cite them, based only on the information given. They are the user's growing knowledge base.
 - Names may be anonymized as "Person A" etc. Keep them as-is.
 - Be warm, concise and specific. No flattery.
 - Write your entire answer in ${langName(outLang)}. The user's own words may be in either language; quote them as they are.`;
@@ -75,6 +86,16 @@ export function questionBlock(q, versions, anon) {
   return `QUESTION (current, stage: ${q.stage}): ${anon(q.text)}\nVERSION HISTORY:\n${hist || '(none)'}`;
 }
 
+// User's saved papers as context; returns {text, map}
+export function libraryBlock(items, anon) {
+  const map = {};
+  const lines = items.map((p, i) => {
+    const key = 'L' + (i + 1); map[key] = p.id;
+    return `[${key}] ${p.authors ? p.authors.split(',')[0] + (p.authors.includes(',') ? ' et al.' : '') : ''} (${p.year || 'n.d.'}). ${p.title}. ${p.venue || ''}${p.note ? ` — my note: ${anon(p.note)}` : ''}${p.summary ? ` — key idea: ${p.summary}` : ''}`;
+  });
+  return { text: lines.join('\n'), map };
+}
+
 export const PROMPTS = {
   summarize: (qb, fb) => `${qb}\n\nFRAGMENTS:\n${fb}\n\nTask: Summarize what these fragments say about the question in 4–7 short bullet points. Cite fragments like [F2]. End with one line: "Still open:" + the most important unresolved thread.`,
   connections: (fb) => `FRAGMENTS (from several questions; each line notes its question):\n${fb}\n\nTask: Find 3–5 meaningful connections between fragments and across questions (including across Japanese and English). For each: a short title, the fragments involved like [F1][F4], and one sentence on why the link matters. Then suggest one new question these connections open up (as a suggestion only).`,
@@ -85,6 +106,22 @@ export const PROMPTS = {
  "next_step": {"category": "body|place|people", "text": "ONE concrete embodied or relational next step", "tip": "tip id from the TIPS list or null"},
  "ask": "one question back to me that helps me write the next version myself"}
 Give 2–3 alternatives: e.g., more open, narrower, reframed. Consider the stage (why / whatif / how).`,
+  column: (paper, question) => `PAPER (metadata from OpenAlex):
+Title: ${paper.title}
+Authors: ${paper.authors}
+Year: ${paper.year}
+Venue: ${paper.venue}
+Citations: ${paper.citedBy ?? 'unknown'}
+Abstract: ${paper.abstract || '(no abstract available — work only from the title and metadata, and say so)'}
+${question ? `\nMY QUESTION: ${question}` : ''}
+
+Task: Write a short column (about 250–350 words) introducing this paper to me, using ONLY the information above. Do not invent findings, numbers or details that are not in the abstract. Use these headings:
+1. What the study did
+2. Why it matters (be careful: citation counts show influence, not truth)
+3. ${question ? 'What it suggests for my question' : 'What it suggests for refining questions'}
+4. One question to ask myself
+End with one line noting any limits of what can be said from the abstract alone.`,
+  keywords: (q) => `Turn this question into 3–6 concise English academic search keywords for a scholarly database (OpenAlex). Output only the keywords separated by spaces, no quotes.\n\n${q}`,
   translate: (text, to) => `Translate the following into natural ${langName(to)}. Output only the translation.\n\n${text}`,
 };
 

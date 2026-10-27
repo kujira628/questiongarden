@@ -1,19 +1,20 @@
 // Question Garden — main app (no build step, plain ES modules)
 import { db, uid, exportAll, importAll } from './db.js';
 import { t, setLang, getLang, fmtDate } from './i18n.js';
-import { PRINCIPLES, REFS, TIPS, TIP_CATEGORIES, INVITATIONS, STAGES } from './content.js';
-import { callClaude, coachSystem, fragmentsBlock, questionBlock, PROMPTS, parseJSON } from './ai.js';
+import { PRINCIPLES, REFS, TIPS, TIP_CATEGORIES, INVITATIONS, STAGES, PAPERS } from './content.js';
+import { callClaude, coachSystem as coachSystemBase, fragmentsBlock, questionBlock, libraryBlock, PROMPTS, parseJSON } from './ai.js';
 
-const APP_VERSION = '1.0.0';
-const DATA_STORES = ['questions', 'versions', 'fragments', 'invitations', 'insights'];
+const APP_VERSION = '1.1.0';
+const DATA_STORES = ['questions', 'versions', 'fragments', 'invitations', 'insights', 'library'];
 const deviceLang = (navigator.language || 'ja').toLowerCase().startsWith('ja') ? 'ja' : 'en';
 const DEFAULTS = {
   uiLang: deviceLang, recLang: deviceLang, coachLang: 'same', theme: 'auto',
   apiKey: '', model: 'claude-sonnet-5-5', anonymize: true, anonNames: '',
-  liveTranscribe: true, onboarded: false, hideInstall: false,
+  liveTranscribe: true, onboarded: false, hideInstall: false, userName: '', oaKey: '',
 };
 let S = { ...DEFAULTS };
-const state = { questions: [], versions: [], fragments: [], invitations: [], insights: [] };
+const state = { questions: [], versions: [], fragments: [], invitations: [], insights: [], library: [] };
+const coachSystem = (lang) => coachSystemBase(lang, S.userName);
 let tipFilter = 'all';
 let audioURLs = [];
 const coach = {}; // questionId -> { messages, parsed, fmap }
@@ -93,9 +94,10 @@ async function shareOrDownload(filename, blob) {
 }
 
 // light markdown: escape, bold, bullets, [F#] chips
-function richText(text, fmap = {}) {
+function richText(text, fmap = {}, lmap = {}) {
   let h = esc(text || '');
   h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  h = h.replace(/\[L(\d+)\]/g, (m, n) => { const id = lmap['L' + n]; const p = id && state.library.find((x) => x.id === id); return `<button class="fchip lchip" data-action="go" data-to="library" title="${p ? esc(p.title) : ''}">📚${p ? esc((p.authors || '').split(',')[0].split(' ').pop()) + ' ' + (p.year || '') : 'L' + n}</button>`; });
   h = h.replace(/\[F(\d+)\]/g, (m, n) => { const id = fmap['F' + n]; return id ? `<button class="fchip" data-action="goto-frag" data-id="${id}">F${n}</button>` : `<span class="fchip">F${n}</span>`; });
   const lines = h.split('\n'); let out = ''; let inList = false;
   for (const ln of lines) {
@@ -171,10 +173,10 @@ function go(path) { location.hash = '#/' + path; }
 function render() {
   audioURLs.forEach((u) => URL.revokeObjectURL(u)); audioURLs = [];
   const r = route();
-  const views = { home: viewHome, q: () => viewQuestion(r.id), unsorted: viewUnsorted, review: viewReview, tips: viewTips, about: viewAbout, settings: viewSettings };
+  const views = { home: viewHome, q: () => viewQuestion(r.id), unsorted: viewUnsorted, review: viewReview, tips: viewTips, papers: () => viewPapers(r.id), library: viewLibrary, about: viewAbout, settings: viewSettings };
   const fn = views[r.name] || viewHome;
   $('#main').innerHTML = fn();
-  const navName = { q: 'home', unsorted: 'home', about: 'tips' }[r.name] || r.name;
+  const navName = { q: 'home', unsorted: 'home', about: 'tips', papers: 'tips', library: 'tips' }[r.name] || r.name;
   document.querySelectorAll('.tabbar a').forEach((a) => {
     a.classList.toggle('on', a.dataset.route === navName);
     $('.lbl', a).textContent = t(a.dataset.label);
@@ -201,7 +203,8 @@ function viewHome() {
     ${qs.length ? qs.map(questionCard).join('') : `<p class="muted empty">${t('noQuestions')}</p>`}
     ${unsorted.length ? `<button class="card link-card" data-action="go" data-to="unsorted">🍃 ${t('unsortedCount', { n: unsorted.length })}</button>` : ''}
     ${state.questions.some((q) => q.status !== 'active') ? `<details class="others"><summary>${t('status_resting')} / ${t('status_archived')}</summary>${state.questions.filter((q) => q.status !== 'active').map(questionCard).join('')}</details>` : ''}
-  </section>`;
+  </section>
+  ${weeklyColumnCard()}`;
 }
 function questionCard(q) {
   const n = fragsOf(q.id).length; const vs = versionsOf(q.id).length;
@@ -244,8 +247,10 @@ function viewQuestion(id) {
     <div class="row wrap"><button class="btn primary" data-action="rewrite" data-id="${q.id}">✎ ${t('newVersion')}</button><button class="btn ghost" data-action="edit-q" data-id="${q.id}">${t('edit')}</button><button class="btn ghost" data-action="translate-q" data-id="${q.id}">${t('translate')}</button></div>
   </section>
   <section class="coachbar"><h2 class="sec">${t('aiTools')}</h2>
-    <div class="row wrap"><button class="btn coach" data-action="polish" data-id="${q.id}">✨ ${t('polish')}</button><button class="btn" data-action="summarize" data-id="${q.id}">${t('summarize')}</button><button class="btn" data-action="connections" data-id="${q.id}">${t('connections')}</button></div>
+    <div class="row wrap"><button class="btn coach" data-action="polish" data-id="${q.id}">✨ ${t('polish')}</button><button class="btn" data-action="summarize" data-id="${q.id}">${t('summarize')}</button><button class="btn" data-action="connections" data-id="${q.id}">${t('connections')}</button><button class="btn" data-action="find-papers" data-id="${q.id}">📚 ${t('findPapers')}</button></div>
+    ${libraryFor(q.id).length ? `<p class="small muted">${t('usesLibrary', { n: Math.min(15, libraryFor(q.id).length) })}</p>` : ''}
   </section>
+  ${state.library.some((p) => (p.questionIds || []).includes(q.id)) ? `<section><h2 class="sec">${t('learnLibrary')}</h2>${state.library.filter((p) => (p.questionIds || []).includes(q.id)).map((p) => `<button class="card small-card paper-mini" data-action="go" data-to="library"><span class="qtext">${esc(p.title)}</span><span class="small muted"> — ${esc((p.authors || '').split(',')[0])} ${p.year || ''}</span></button>`).join('')}</section>` : ''}
   <section><div class="sec-row"><h2 class="sec">${t('invitationsForQ')}</h2><button class="btn small" data-action="new-inv" data-id="${q.id}">＋ ${t('newInvitation')}</button></div>
     ${invs.map((i) => invitationCard(i, { showQuestion: false })).join('')}
   </section>
@@ -264,8 +269,8 @@ function insightCard(x) {
   let body;
   if (x.type === 'polish' && x.parsed) {
     const p = x.parsed;
-    body = `<p><strong>${t('coachReflection')}:</strong> ${richText(p.reflection, x.fmap)}</p><p><strong>${t('coachAssumption')}:</strong> ${esc(p.assumption)}</p>${(p.alternatives || []).map((a) => `<p class="alt">→ ${esc(a.text)}</p>`).join('')}`;
-  } else body = richText(x.text, x.fmap);
+    body = `<p><strong>${t('coachReflection')}:</strong> ${richText(p.reflection, x.fmap, x.lmap)}</p><p><strong>${t('coachAssumption')}:</strong> ${esc(p.assumption)}</p>${(p.alternatives || []).map((a) => `<p class="alt">→ ${esc(a.text)}</p>`).join('')}`;
+  } else body = richText(x.text, x.fmap, x.lmap);
   return `<details class="card insight"><summary><span>${label}</span><span class="small muted">${fmtDate(x.createdAt)}</span></summary><div class="insight-body">${body}</div><button class="link small danger-text" data-action="delete-insight" data-id="${x.id}">${t('delete')}</button></details>`;
 }
 
@@ -304,7 +309,7 @@ function tipCard(tp, open = false) {
 }
 function viewTips() {
   const list = TIPS.filter((x) => tipFilter === 'all' || x.category === tipFilter);
-  return `<header class="page-head"><h1>${t('tipsTitle')}</h1><p class="lead">${t('tipsLead')}</p></header>
+  return `${learnTabs('tips')}<header class="page-head"><h1>${t('tipsTitle')}</h1><p class="lead">${t('tipsLead')}</p></header>
   <div class="filters">${['all', ...TIP_CATEGORIES].map((c) => `<button class="chip ${tipFilter === c ? 'on' : ''}" data-action="tip-filter" data-cat="${c}">${c === 'all' ? '' : catIcon(c) + ' '}${t('cat_' + c)}</button>`).join('')}</div>
   ${list.map((x) => tipCard(x)).join('')}
   <button class="card link-card" data-action="go" data-to="about">📚 ${t('aboutMethod')}</button>`;
@@ -335,9 +340,12 @@ function viewSettings() {
     <label for="apikey">${t('apiKey')}</label><input id="apikey" type="password" autocomplete="off" data-setting="apiKey" value="${esc(S.apiKey)}" placeholder="sk-ant-...">
     <p class="small muted">${t('apiKeyHint')}</p>
     <label for="model">${t('model')}</label><input id="model" data-setting="model" value="${esc(S.model)}">
+    <label for="uname">${t('userName')}</label><input id="uname" data-setting="userName" value="${esc(S.userName)}" placeholder="${esc(t('userNamePlaceholder'))}">
     <label class="check"><input type="checkbox" data-setting="anonymize" ${S.anonymize ? 'checked' : ''}> ${t('anonymize')}</label>
     <label for="anon">${t('anonNames')}</label><input id="anon" data-setting="anonNames" value="${esc(S.anonNames)}" placeholder="田中, Sarah">
     <p class="small muted">${t('anonHint')}</p>
+    <label for="oakey">${t('oaKey')}</label><input id="oakey" type="password" autocomplete="off" data-setting="oaKey" value="${esc(S.oaKey)}">
+    <p class="small muted">${t('oaKeyHint')}</p>
   </div>
   <div class="card form">
     <label>${t('data')}</label>
@@ -349,6 +357,208 @@ function viewSettings() {
   </div>
   <button class="card link-card" data-action="go" data-to="about">📚 ${t('aboutMethod')}</button>
   <p class="small muted center">${t('appName')} · ${t('version')} ${APP_VERSION}</p>`;
+}
+
+// ---------------------------------------------------------------------------
+// Learn: paper columns, live search (OpenAlex), bookshelf
+// ---------------------------------------------------------------------------
+const OA = 'https://api.openalex.org';
+const paperSearch = { q: '', minCites: 100, period: 'all', sort: 'relevance', results: null, loading: false, error: null, forQ: null };
+const resultsById = {};
+let citeCache = { ts: 0, map: {} };
+let libFilter = 'all';
+
+function learnTabs(active) {
+  const tabs = [['tips', 'learnTips'], ['papers', 'learnPapers'], ['library', 'learnLibrary']];
+  return `<nav class="subtabs">${tabs.map(([r, k]) => `<a href="#/${r}" class="${active === r ? 'on' : ''}">${t(k)}${r === 'library' && state.library.length ? ` <span class="count">${state.library.length}</span>` : ''}</a>`).join('')}</nav>`;
+}
+const paperKey = (doi, fallback) => (doi ? 'doi:' + doi.toLowerCase() : fallback);
+const isFav = (id) => state.library.some((p) => p.id === id);
+function libraryFor(qid) {
+  const linked = state.library.filter((p) => (p.questionIds || []).includes(qid));
+  const rest = state.library.filter((p) => !(p.questionIds || []).includes(qid)).sort((a, b) => b.savedAt - a.savedAt);
+  return [...linked, ...rest].slice(0, 15);
+}
+function weekIndex() { const d = new Date(); const start = new Date(d.getFullYear(), 0, 1); return Math.floor((d - start) / (7 * 864e5)); }
+function weeklyPaper() { return PAPERS[weekIndex() % PAPERS.length]; }
+function weeklyColumnCard() {
+  const p = weeklyPaper(); const x = L(p);
+  return `<section><h2 class="sec">${t('homeColumn')}</h2><button class="card column-teaser" data-action="go" data-to="papers/${p.id}">
+    <span class="small muted">${t('type_' + p.type)} · ${esc(p.venue.split(',')[0])} · ${p.year}</span>
+    <span class="teaser-head">${esc(x.headline)}</span>
+    <span class="small muted">${esc(p.authors.split(',')[0])}${p.authors.includes(',') ? ' et al.' : ''}</span></button></section>`;
+}
+function citesOf(doi) { const n = citeCache.map[(doi || '').toLowerCase()]; return typeof n === 'number' ? n : null; }
+async function loadCitations() {
+  const m = await db.get('meta', 'citeCache'); if (m) citeCache = m.value;
+  if (Date.now() - citeCache.ts < 7 * 864e5 && Object.keys(citeCache.map).length) return;
+  try {
+    const dois = PAPERS.map((p) => p.doi).join('|');
+    const r = await fetch(`${OA}/works?filter=doi:${dois}&select=doi,cited_by_count&per_page=50${S.oaKey ? '&api_key=' + encodeURIComponent(S.oaKey) : ''}`);
+    if (!r.ok) return;
+    const d = await r.json(); const map = {};
+    for (const w of d.results || []) if (w.doi) map[w.doi.replace('https://doi.org/', '').toLowerCase()] = w.cited_by_count;
+    citeCache = { ts: Date.now(), map }; await db.put('meta', { id: 'citeCache', value: citeCache });
+    if (['papers', 'library', 'home'].includes(route().name) && $('#sheet').classList.contains('hidden')) render();
+  } catch (e) { /* offline: show without counts */ }
+}
+function invertAbstract(inv) {
+  if (!inv) return ''; const arr = [];
+  for (const [w, pos] of Object.entries(inv)) for (const i of pos) arr[i] = w;
+  return arr.filter(Boolean).join(' ');
+}
+function fromOA(w) {
+  const doi = w.doi ? w.doi.replace('https://doi.org/', '') : '';
+  const au = (w.authorships || []).map((a) => a.author && a.author.display_name).filter(Boolean);
+  const loc = w.primary_location || {};
+  return {
+    id: paperKey(doi, w.id), source: 'openalex', doi, title: w.display_name || '', authors: au.slice(0, 6).join(', ') + (au.length > 6 ? ', et al.' : ''),
+    year: w.publication_year, venue: loc.source ? loc.source.display_name : '', citedBy: w.cited_by_count,
+    abstract: invertAbstract(w.abstract_inverted_index), url: doi ? 'https://doi.org/' + doi : (loc.landing_page_url || w.id), type: w.type,
+  };
+}
+async function runPaperSearch() {
+  const q = paperSearch.q.trim(); if (!q) return;
+  paperSearch.loading = true; paperSearch.error = null; paperSearch.results = null; render();
+  try {
+    const f = [`cited_by_count:>${Math.max(0, paperSearch.minCites - 1)}`, 'type:article|review'];
+    if (paperSearch.period === 'recent') f.push(`from_publication_date:${new Date().getFullYear() - 10}-01-01`);
+    const sel = 'id,doi,display_name,publication_year,cited_by_count,authorships,primary_location,abstract_inverted_index,type';
+    const url = `${OA}/works?search=${encodeURIComponent(q)}&filter=${f.join(',')}&per_page=15&select=${sel}${paperSearch.sort === 'cites' ? '&sort=cited_by_count:desc' : ''}${S.oaKey ? '&api_key=' + encodeURIComponent(S.oaKey) : ''}`;
+    const r = await fetch(url); if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    paperSearch.results = (d.results || []).map(fromOA);
+    paperSearch.results.forEach((x) => { resultsById[x.id] = x; });
+  } catch (e) { paperSearch.error = e.message; }
+  paperSearch.loading = false; render();
+}
+function favButton(id) {
+  const on = isFav(id);
+  return `<button class="btn small ${on ? 'faved' : ''}" data-action="paper-fav" data-id="${esc(id)}">${on ? '★ ' + t('unfav') : '☆ ' + t('fav')}</button>`;
+}
+function curatedCard(p, open = false) {
+  const x = L(p); const id = paperKey(p.doi, p.id); const c = citesOf(p.doi);
+  return `<details class="card column" id="col-${p.id}" ${open ? 'open' : ''}>
+    <summary><span class="small muted meta">${t('type_' + p.type)} · ${esc(p.venue.split(',')[0])} · ${p.year}${c !== null ? ' · ' + t('citations', { n: c.toLocaleString() }) : ''}</span>
+    <span class="col-head">${esc(x.headline)}</span></summary>
+    <div class="col-body">
+      <p class="paper-title" lang="en">${esc(p.title)}</p><p class="small muted">${esc(p.authors)} — <i>${esc(p.venue)}</i></p>
+      <h4>${t('whatStudy')}</h4><p>${esc(x.what)}</p>
+      <h4>${t('whyMatters')}</h4><p>${esc(x.why)}</p>
+      <h4>${t('implication')}</h4><p class="try">${esc(x.implication)}</p>
+      <h4>${t('promptForYou')}</h4><p class="prompt">“${esc(x.prompt)}”</p>
+      <div class="row wrap">${favButton(id)}<a class="btn small ghost" href="https://doi.org/${p.doi}" target="_blank" rel="noopener">↗ ${t('openPaper')}</a></div>
+    </div></details>`;
+}
+function resultCard(x) {
+  return `<article class="card result">
+    <p class="small muted meta">${esc(x.venue || '—')} · ${x.year || ''} · ${t('citations', { n: (x.citedBy || 0).toLocaleString() })}</p>
+    <p class="paper-title" lang="en">${esc(x.title)}</p>
+    <p class="small muted">${esc(x.authors)}</p>
+    <details><summary class="small">${t('abstract')}</summary><p class="small" lang="en">${x.abstract ? esc(x.abstract) : t('noAbstract')}</p></details>
+    <div class="row wrap">${favButton(x.id)}<button class="btn small" data-action="paper-column" data-id="${esc(x.id)}">✍️ ${t('makeColumn')}</button><a class="btn small ghost" href="${esc(x.url)}" target="_blank" rel="noopener">↗</a></div>
+  </article>`;
+}
+function viewPapers(openId) {
+  const ps = paperSearch; const forQ = ps.forQ ? qById(ps.forQ) : null;
+  const weekly = weeklyPaper();
+  let results = '';
+  if (ps.loading) results = `<div class="thinking"><span class="spinner"></span><p>${t('searching')}</p></div>`;
+  else if (ps.error) results = `<p class="error">${t('searchError')}</p><a class="link" href="https://scholar.google.com/scholar?q=${encodeURIComponent(ps.q)}" target="_blank" rel="noopener">${t('scholarLink')} ↗</a>`;
+  else if (ps.results) results = ps.results.length ? ps.results.map(resultCard).join('') + `<p class="small muted">${t('citationsNote')} · <a href="https://openalex.org" target="_blank" rel="noopener">OpenAlex</a></p>` : `<p class="muted">${t('noResults')}</p><a class="link" href="https://scholar.google.com/scholar?q=${encodeURIComponent(ps.q)}" target="_blank" rel="noopener">${t('scholarLink')} ↗</a>`;
+  const showJaHint = /[぀-ヿ㐀-鿿]/.test(ps.q);
+  return `${learnTabs('papers')}<header class="page-head"><h1>${t('learnPapers')}</h1><p class="lead">${t('papersLead')}</p></header>
+  <section><h2 class="sec">${t('weeklyColumn')}</h2>${curatedCard(weekly, !openId || openId === weekly.id)}</section>
+  <section><h2 class="sec">${t('searchTitle')}</h2>
+    <div class="card form search">
+      ${forQ ? `<p class="small muted">🌱 ${esc(forQ.text)}</p>` : ''}
+      <div class="searchrow"><input id="pq" type="search" enterkeyhint="search" value="${esc(ps.q)}" placeholder="${esc(t('searchPlaceholder'))}"><button class="btn primary" data-action="paper-search">${t('search')}</button></div>
+      ${showJaHint ? `<p class="small muted">${t('jaHint')} <button class="link small" data-action="paper-keywords">✨ ${t('aiKeywords')}</button></p>` : ''}
+      <div class="filters-grid">
+        <label>${t('minCites')}</label>${seg('p-minCites', String(ps.minCites), [['20', '20+'], ['100', '100+'], ['500', '500+'], ['1000', '1000+']])}
+        <label>${t('period')}</label>${seg('p-period', ps.period, [['all', t('periodAll')], ['recent', t('periodRecent')]])}
+        <label>${t('sortBy')}</label>${seg('p-sort', ps.sort, [['relevance', t('sortRelevance')], ['cites', t('sortCites')]])}
+      </div>
+    </div>
+    ${results}
+  </section>
+  <section><h2 class="sec">${t('curatedTitle')}</h2>${PAPERS.filter((p) => p.id !== weekly.id).map((p) => curatedCard(p, openId === p.id)).join('')}
+  <p class="small muted">${t('citationsNote')}</p></section>`;
+}
+function viewLibrary() {
+  const qs = state.questions.filter((q) => state.library.some((p) => (p.questionIds || []).includes(q.id)));
+  let list = state.library.slice().sort((a, b) => b.savedAt - a.savedAt);
+  if (libFilter !== 'all') list = list.filter((p) => (p.questionIds || []).includes(libFilter));
+  return `${learnTabs('library')}<header class="page-head"><h1>${t('libraryTitle')}</h1><p class="lead">${t('libraryLead')}</p></header>
+  ${qs.length ? `<div class="filters"><button class="chip ${libFilter === 'all' ? 'on' : ''}" data-action="lib-filter" data-id="all">${t('filterAll')}</button>${qs.map((q) => `<button class="chip ${libFilter === q.id ? 'on' : ''}" data-action="lib-filter" data-id="${q.id}">${esc(q.text.slice(0, 18))}…</button>`).join('')}</div>` : ''}
+  ${list.length ? `<p class="small muted">${t('libraryCount', { n: list.length })}</p>` + list.map(libraryCard).join('') : `<p class="muted empty">${t('libraryEmpty')}</p><button class="btn" data-action="go" data-to="papers">📚 ${t('learnPapers')}</button>`}
+  ${state.library.length ? `<div class="row wrap footer-actions"><button class="btn ghost" data-action="export-library">⇪ ${t('exportLibrary')}</button></div>` : ''}`;
+}
+function libraryCard(p) {
+  const c = p.doi ? (citesOf(p.doi) ?? p.citedBy) : p.citedBy;
+  const qs = activeQs();
+  return `<article class="card libcard">
+    <p class="small muted meta">${esc((p.venue || '').split(',')[0] || '—')} · ${p.year || ''}${c != null ? ' · ' + t('citations', { n: Number(c).toLocaleString() }) : ''}</p>
+    <p class="paper-title" lang="en">${esc(p.title)}</p>
+    <p class="small muted">${esc(p.authors || '')}</p>
+    ${p.headline ? `<p class="col-head small-head">${esc(L(p.headline))}</p>` : ''}
+    ${p.column ? `<details><summary class="small">${t('columnTitle')}</summary><div class="insight-body small">${richText(p.column)}</div></details>` : ''}
+    <label class="small">${t('myNote')}</label><textarea rows="2" data-lib-note="${esc(p.id)}">${esc(p.note || '')}</textarea>
+    ${qs.length ? `<p class="small muted lq">${t('linkedQuestions')}</p><div class="qpick">${qs.map((q) => `<button class="chip small ${(p.questionIds || []).includes(q.id) ? 'on' : ''}" data-action="lib-q" data-id="${esc(p.id)}" data-q="${q.id}">${esc(q.text.length > 24 ? q.text.slice(0, 24) + '…' : q.text)}</button>`).join('')}</div>` : ''}
+    <div class="row wrap">${favButton(p.id)}${!p.column && p.source === 'openalex' ? `<button class="btn small" data-action="paper-column" data-id="${esc(p.id)}">✍️ ${t('makeColumn')}</button>` : ''}<a class="btn small ghost" href="${esc(p.url)}" target="_blank" rel="noopener">↗ ${t('openPaper')}</a></div>
+  </article>`;
+}
+function paperItem(id) {
+  const lib = state.library.find((p) => p.id === id); if (lib) return lib;
+  if (resultsById[id]) return resultsById[id];
+  const cur = PAPERS.find((p) => paperKey(p.doi, p.id) === id);
+  if (cur) return { id, source: 'curated', curatedId: cur.id, doi: cur.doi, title: cur.title, authors: cur.authors, year: cur.year, venue: cur.venue, citedBy: citesOf(cur.doi), url: 'https://doi.org/' + cur.doi, headline: { ja: cur.ja.headline, en: cur.en.headline }, summary: cur.en.what + ' Implication: ' + cur.en.implication, abstract: '' };
+  return null;
+}
+async function toggleFav(id) {
+  if (isFav(id)) { await remove('library', id); toast(t('unfaved')); }
+  else {
+    const it = paperItem(id); if (!it) return;
+    const rec = { ...it, note: it.note || '', questionIds: paperSearch.forQ && qById(paperSearch.forQ) ? [paperSearch.forQ] : [], savedAt: Date.now() };
+    if (!rec.summary) rec.summary = (rec.column || rec.abstract || '').slice(0, 500);
+    await put('library', rec); toast(t('faved'));
+  }
+  const open = [...document.querySelectorAll('details[open]')].map((d) => d.id).filter(Boolean);
+  const y = window.scrollY;
+  if ($('#sheet').classList.contains('hidden')) { render(); open.forEach((i) => { const d = document.getElementById(i); if (d) d.open = true; }); window.scrollTo(0, y); }
+  else { const b = $('.sheet-body [data-action="paper-fav"]'); if (b) b.outerHTML = favButton(id); }
+}
+function aiPaperColumn(id) {
+  if (!requireKey()) return;
+  const it = paperItem(id); if (!it) return;
+  const q = paperSearch.forQ ? qById(paperSearch.forQ) : (it.questionIds && it.questionIds[0] ? qById(it.questionIds[0]) : null);
+  const anon = makeAnon(); const lang = outLang([]);
+  const content = PROMPTS.column(it, q ? anon(q.text) : '');
+  previewAndSend({ title: t('makeColumn'), content, system: coachSystem(lang), maxTokens: 1500, full: true, onResult: async (text) => {
+    it.column = text; it.summary = text.slice(0, 500);
+    if (isFav(id)) await put('library', it);
+    openSheet(`<h2>✍️ ${t('columnTitle')}</h2><p class="paper-title" lang="en">${esc(it.title)}</p><p class="small muted">${esc(it.authors)} · ${esc(it.venue || '')} ${it.year || ''}</p>
+      <div class="insight-body">${richText(text)}</div><div class="row end">${favButton(id)}<button class="btn" data-action="sheet-close">${t('close')}</button></div>`, { full: true });
+  } });
+}
+function aiKeywords() {
+  if (!requireKey()) return;
+  const anon = makeAnon(); const content = PROMPTS.keywords(anon(paperSearch.q));
+  previewAndSend({ title: t('aiKeywords'), content, system: 'You convert research questions into concise English search keywords. Output only the keywords.', maxTokens: 100, onResult: async (text) => {
+    paperSearch.q = text.replace(/["\n]/g, ' ').trim(); closeSheet(); runPaperSearch();
+  } });
+}
+function libraryMarkdown() {
+  const lines = [`# ${t('libraryTitle')}`, ''];
+  state.library.slice().sort((a, b) => b.savedAt - a.savedAt).forEach((p) => {
+    lines.push(`## ${p.title}`, `${p.authors || ''} (${p.year || 'n.d.'}). *${p.venue || ''}*. ${p.url || ''}`);
+    const qs = (p.questionIds || []).map(qById).filter(Boolean);
+    if (qs.length) lines.push(`- ${t('linkedQuestions')}: ${qs.map((q) => q.text).join(' / ')}`);
+    if (p.note) lines.push(`- ${t('myNote')}: ${p.note}`);
+    if (p.column) lines.push('', p.column);
+    lines.push('');
+  });
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -593,9 +803,10 @@ function aiSummarize(qid) {
   if (!requireKey()) return;
   const q = qById(qid); const anon = makeAnon(); const frags = fragsOf(qid).slice(-80);
   const fb = fragmentsBlock(frags, anon); const lang = outLang(frags);
-  const content = PROMPTS.summarize(questionBlock(q, versionsOf(qid), anon), fb.text);
+  const lb = libraryBlock(libraryFor(qid), anon);
+  const content = PROMPTS.summarize(questionBlock(q, versionsOf(qid), anon), fb.text) + (lb.text ? `\n\nMY LIBRARY (papers I saved; cite as [L#] only if relevant):\n${lb.text}` : '');
   previewAndSend({ title: t('summarize'), content, system: coachSystem(lang), onResult: async (text) => {
-    const ins = await put('insights', { id: uid(), questionId: qid, type: 'summary', text, fmap: fb.map, sourceIds: citedIds(text, fb.map), lang, createdAt: Date.now() });
+    const ins = await put('insights', { id: uid(), questionId: qid, type: 'summary', text, fmap: fb.map, lmap: lb.map, sourceIds: citedIds(text, fb.map), lang, createdAt: Date.now() });
     showInsight(ins);
   } });
 }
@@ -614,7 +825,7 @@ function aiConnections(qid) {
   } });
 }
 function showInsight(ins) {
-  openSheet(`<h2>${ins.type === 'summary' ? t('summarize') : t('connections')}</h2><div class="insight-body">${richText(ins.text, ins.fmap)}</div>
+  openSheet(`<h2>${ins.type === 'summary' ? t('summarize') : t('connections')}</h2><div class="insight-body">${richText(ins.text, ins.fmap, ins.lmap)}</div>
   <p class="small muted">${t('sourceFragments')}: ${ins.sourceIds.length}</p><div class="row end"><button class="btn primary" data-action="sheet-close">${t('close')}</button></div>`, { full: true });
   render();
 }
@@ -623,11 +834,12 @@ function aiPolish(qid) {
   if (!requireKey()) return;
   const q = qById(qid); const anon = makeAnon(); const frags = fragsOf(qid).slice(-60);
   const fb = fragmentsBlock(frags, anon); const lang = outLang(frags);
-  const content = PROMPTS.polish(questionBlock(q, versionsOf(qid), anon), fb.text);
+  const lb = libraryBlock(libraryFor(qid), anon);
+  const content = (lb.text ? `MY LIBRARY (papers I saved; you may cite them as [L#] in reflection, assumption or rationale):\n${lb.text}\n\n` : '') + PROMPTS.polish(questionBlock(q, versionsOf(qid), anon), fb.text);
   previewAndSend({ title: t('polish'), content, system: coachSystem(lang), maxTokens: 2200, full: true, onResult: async (text) => {
     const parsed = parseJSON(text);
-    coach[qid] = { messages: [{ role: 'user', content }, { role: 'assistant', content: text }], parsed, fmap: fb.map, lang, replies: [] };
-    await put('insights', { id: uid(), questionId: qid, type: 'polish', text, parsed, fmap: fb.map, sourceIds: citedIds(text, fb.map), lang, createdAt: Date.now() });
+    coach[qid] = { messages: [{ role: 'user', content }, { role: 'assistant', content: text }], parsed, fmap: fb.map, lmap: lb.map, lang, replies: [] };
+    await put('insights', { id: uid(), questionId: qid, type: 'polish', text, parsed, fmap: fb.map, lmap: lb.map, sourceIds: citedIds(text, fb.map), lang, createdAt: Date.now() });
     renderCoach(qid);
     render();
   } });
@@ -635,13 +847,13 @@ function aiPolish(qid) {
 function renderCoach(qid) {
   const c = coach[qid]; const q = qById(qid); const p = c.parsed;
   const body = p ? `
-    <section class="coach-sec"><h4>🪞 ${t('coachReflection')}</h4>${richText(p.reflection, c.fmap)}</section>
-    <section class="coach-sec"><h4>🧩 ${t('coachAssumption')}</h4><p>${esc(p.assumption)}</p></section>
-    <section class="coach-sec"><h4>🌿 ${t('coachAlternatives')}</h4>${(p.alternatives || []).map((a, i) => `<div class="alt-card"><p class="qtext">${esc(a.text)}</p><p class="small">${esc(a.rationale)}</p><p class="small muted">${t('technique')}: ${esc(a.technique)}</p><button class="link small" data-action="coach-draft" data-id="${qid}" data-i="${i}">${t('useAsStart')}</button></div>`).join('')}</section>
+    <section class="coach-sec"><h4>🪞 ${t('coachReflection')}</h4>${richText(p.reflection, c.fmap, c.lmap)}</section>
+    <section class="coach-sec"><h4>🧩 ${t('coachAssumption')}</h4>${richText(p.assumption, c.fmap, c.lmap)}</section>
+    <section class="coach-sec"><h4>🌿 ${t('coachAlternatives')}</h4>${(p.alternatives || []).map((a, i) => `<div class="alt-card"><p class="qtext">${esc(a.text)}</p><div class="small">${richText(a.rationale, c.fmap, c.lmap)}</div><p class="small muted">${t('technique')}: ${esc(a.technique)}</p><button class="link small" data-action="coach-draft" data-id="${qid}" data-i="${i}">${t('useAsStart')}</button></div>`).join('')}</section>
     ${p.next_step ? `<section class="coach-sec"><h4>${catIcon(p.next_step.category)} ${t('coachNextStep')}</h4><p>${esc(p.next_step.text)}</p>${p.next_step.tip && TIPS.find((x) => x.id === p.next_step.tip) ? `<button class="link small" data-action="open-tip" data-id="${p.next_step.tip}">💡 ${esc(L(TIPS.find((x) => x.id === p.next_step.tip)).title)}</button>` : ''}<button class="btn small" data-action="coach-inv" data-id="${qid}">＋ ${t('addAsInvitation')}</button></section>` : ''}
     <section class="coach-sec ask"><h4>❓ ${t('coachAsk')}</h4><p>${esc(p.ask)}</p></section>`
-    : `<div class="insight-body">${richText(c.messages[1].content, c.fmap)}</div>`;
-  const replies = c.replies.map((r) => `<div class="bubble ${r.role}">${r.role === 'user' ? esc(r.content) : richText(r.content, c.fmap)}</div>`).join('');
+    : `<div class="insight-body">${richText(c.messages[1].content, c.fmap, c.lmap)}</div>`;
+  const replies = c.replies.map((r) => `<div class="bubble ${r.role}">${r.role === 'user' ? esc(r.content) : richText(r.content, c.fmap, c.lmap)}</div>`).join('');
   openSheet(`<h2>✨ ${t('polish')}</h2><p class="small muted qtext">${esc(q.text)}</p>${body}<div class="chat">${replies}</div>
     <div class="form"><textarea id="coachreply" rows="2" placeholder="${esc(t('replyPlaceholder'))}"></textarea>
     <div class="row between"><button class="btn" data-action="coach-reply" data-id="${qid}">${t('send')}</button><button class="btn primary" data-action="coach-write" data-id="${qid}">✎ ${t('writeNextVersion')}</button></div></div>`, { full: true });
@@ -763,9 +975,17 @@ const actions = {
   'translate-frag': (el) => aiTranslate('f', el.dataset.id),
   'export-md': (el) => { const q = qById(el.dataset.id); const name = 'question-' + new Date().toISOString().slice(0, 10) + '.md'; shareOrDownload(name, new Blob([questionMarkdown(q)], { type: 'text/markdown' })); },
   'export-json': async () => { const data = await exportAll(); shareOrDownload(`question-garden-backup-${new Date().toISOString().slice(0, 10)}.json`, new Blob([JSON.stringify(data)], { type: 'application/json' })); },
-  set: async (el) => { S[el.dataset.key] = el.dataset.val; await saveSettings(); applySettings(); if ($('.onboard')) onboarding(+($('.dots .on') ? [...$('.dots').children].findIndex((x) => x.classList.contains('on')) + 1 : 1)); render(); updateStorageStatus(); },
+  set: async (el) => { if (el.dataset.key.startsWith('p-')) { const k = el.dataset.key.slice(2); paperSearch[k] = k === 'minCites' ? +el.dataset.val : el.dataset.val; paperSearch.q = $('#pq') ? $('#pq').value : paperSearch.q; if (paperSearch.q.trim()) runPaperSearch(); else render(); return; } S[el.dataset.key] = el.dataset.val; await saveSettings(); applySettings(); if ($('.onboard')) onboarding(+($('.dots .on') ? [...$('.dots').children].findIndex((x) => x.classList.contains('on')) + 1 : 1)); render(); updateStorageStatus(); },
   'hide-install': async () => { S.hideInstall = true; await saveSettings(); render(); },
   'sheet-close': () => closeSheet(),
+  'find-papers': (el) => { const q = qById(el.dataset.id); paperSearch.forQ = q.id; paperSearch.q = q.text; go('papers'); runPaperSearch(); },
+  'paper-search': () => { paperSearch.q = $('#pq').value; runPaperSearch(); },
+  'paper-keywords': () => { paperSearch.q = $('#pq').value; aiKeywords(); },
+  'paper-fav': (el) => toggleFav(el.dataset.id),
+  'paper-column': (el) => aiPaperColumn(el.dataset.id),
+  'lib-filter': (el) => { libFilter = el.dataset.id; render(); },
+  'lib-q': async (el) => { const p = state.library.find((x) => x.id === el.dataset.id); const qid = el.dataset.q; p.questionIds = p.questionIds || []; p.questionIds = p.questionIds.includes(qid) ? p.questionIds.filter((x) => x !== qid) : [...p.questionIds, qid]; await put('library', p); el.classList.toggle('on'); },
+  'export-library': () => shareOrDownload(`bookshelf-${new Date().toISOString().slice(0, 10)}.md`, new Blob([libraryMarkdown()], { type: 'text/markdown' })),
   'ob-next': (el) => onboarding(+el.dataset.step),
   'ob-finish': async () => { S.onboarded = true; await saveSettings(); closeSheet(); if (!state.questions.length) openQuestionForm(null); },
 };
@@ -778,6 +998,7 @@ document.addEventListener('click', (e) => {
 });
 document.addEventListener('change', async (e) => {
   const el = e.target;
+  if (el.dataset.libNote) { const p = state.library.find((x) => x.id === el.dataset.libNote); if (p) { p.note = el.value.trim(); await put('library', p); toast(t('saved')); } }
   if (el.dataset.setting) { S[el.dataset.setting] = el.type === 'checkbox' ? el.checked : el.value.trim(); await saveSettings(); }
   if (el.dataset.actionChange === 'import-json' && el.files[0]) {
     try { const data = JSON.parse(await el.files[0].text()); const r = await importAll(data); await loadAll(); render(); toast(t('importDone', { q: r.q, f: r.f })); }
@@ -795,6 +1016,7 @@ document.addEventListener('input', (e) => {
     if (id !== cap.suggested) { cap.suggested = id; cap.qids = new Set(id ? [id] : []); const ta = $('#captext'); const pos = ta.selectionStart; rerenderCapture(); const n = $('#captext'); n.focus(); n.setSelectionRange(pos, pos); }
   }, 700);
 });
+document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'pq') { e.preventDefault(); paperSearch.q = e.target.value; runPaperSearch(); } });
 window.addEventListener('hashchange', () => { window.scrollTo(0, 0); $('#toast').classList.remove('show'); render(); });
 
 // ---------------------------------------------------------------------------
@@ -816,7 +1038,7 @@ async function boot() {
   await loadSettings(); applySettings(); await loadAll();
   try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch (e) {}
   await ensureDailyInvitations();
-  render(); updateStorageStatus();
+  render(); updateStorageStatus(); loadCitations();
   if (!S.onboarded) onboarding(1);
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('./sw.js').catch(() => {});
 }
